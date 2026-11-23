@@ -42,7 +42,7 @@
   .hud b { color: var(--accent); font-variant-numeric: tabular-nums; }
 
   .stage { position: relative; width: 100%; max-width: 480px; }
-  canvas {
+  #board {
     display: block; width: 100%; aspect-ratio: 1 / 1;
     background: var(--panel); border: 2px solid var(--panel-2); border-radius: 12px;
     image-rendering: pixelated; touch-action: none;
@@ -134,6 +134,9 @@
 
   .help { color: var(--muted); font-size: .8rem; margin-top: 10px; text-align: center; max-width: 480px; }
   kbd { background: var(--panel-2); border-radius: 4px; padding: 1px 5px; font-size: .75rem; }
+
+  /* Feu d'artifice : calque plein écran au-dessus de tout, non cliquable */
+  #fireworks { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 1000; }
 </style>
 </head>
 <body>
@@ -194,6 +197,8 @@
       </div>
     </div>
   </div>
+
+  <canvas id="fireworks" aria-hidden="true"></canvas>
 
   <div class="pad" id="pad">
     <button class="up" data-dir="up" aria-label="Haut">▲</button>
@@ -608,7 +613,7 @@
     const q = questions[qIndex];
     const chosen = currentChoices[i];
     const correct = chosen.kind === 'ok';
-    if (correct) score++;
+    if (correct) { score++; Fireworks.celebrate(); }
     answers.push({ q, correct, chosen: chosen.kind });
 
     const buttons = $('qChoices').querySelectorAll('.choice');
@@ -754,6 +759,105 @@
   $('restartBtn').addEventListener('click', startGame);
   $('nextBtn').addEventListener('click', nextStep);
   $('resumeBtn').addEventListener('click', togglePause);
+
+  /* ------------------------------------------------------------------
+   * Feu d'artifice (bonne réponse)
+   *  Des fusées montent depuis le bas de l'écran puis explosent en
+   *  gerbes de particules soumises à la gravité, avec traînées.
+   * ------------------------------------------------------------------ */
+  const Fireworks = (() => {
+    const fw = $('fireworks');
+    const fctx = fw.getContext('2d');
+    const COLORS = ['#3ee6a8', '#39b7ff', '#ffc857', '#ff5c7a', '#c38bff', '#ff8c5c', '#ffffff'];
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let rockets = [], sparks = [], running = false, dpr = 1, W = 0, H = 0;
+
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = window.innerWidth; H = window.innerHeight;
+      fw.width = W * dpr; fw.height = H * dpr;
+      fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function explode(x, y, color) {
+      const n = reduced ? 30 : 70 + Math.floor(Math.random() * 40);
+      const power = 2.5 + Math.random() * 2.5;
+      const twoTone = Math.random() < .4 ? COLORS[Math.floor(Math.random() * COLORS.length)] : null;
+      for (let i = 0; i < n; i++) {
+        const a = (Math.PI * 2 * i) / n + Math.random() * .2;
+        const v = power * (.4 + Math.random() * .6);
+        sparks.push({
+          x, y, px: x, py: y,
+          vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+          life: 1, decay: .012 + Math.random() * .014,
+          color: twoTone && i % 2 ? twoTone : color,
+          size: 1.4 + Math.random() * 1.6
+        });
+      }
+    }
+
+    function launch(delay) {
+      setTimeout(() => {
+        const tx = W * (.15 + Math.random() * .7);
+        const ty = H * (.12 + Math.random() * .35);
+        const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+        if (reduced) { explode(tx, ty, color); start(); return; }
+        const x = tx + (Math.random() - .5) * W * .2;
+        const frames = 45 + Math.random() * 15;
+        rockets.push({ x, y: H + 10, px: x, py: H + 10, tx, ty,
+          vx: (tx - x) / frames, vy: (ty - H - 10) / frames, color, t: 0, frames });
+        start();
+      }, delay);
+    }
+
+    function frame() {
+      // effacement partiel pour laisser des traînées lumineuses
+      fctx.globalCompositeOperation = 'destination-out';
+      fctx.fillStyle = 'rgba(0,0,0,.22)';
+      fctx.fillRect(0, 0, W, H);
+      fctx.globalCompositeOperation = 'lighter';
+
+      rockets = rockets.filter((r) => {
+        r.px = r.x; r.py = r.y;
+        r.x += r.vx; r.y += r.vy; r.t++;
+        fctx.strokeStyle = r.color; fctx.lineWidth = 2;
+        fctx.beginPath(); fctx.moveTo(r.px, r.py); fctx.lineTo(r.x, r.y); fctx.stroke();
+        if (r.t >= r.frames) { explode(r.x, r.y, r.color); return false; }
+        return true;
+      });
+
+      sparks = sparks.filter((s) => {
+        s.px = s.x; s.py = s.y;
+        s.vx *= .985; s.vy = s.vy * .985 + .045; // frottement + gravité
+        s.x += s.vx; s.y += s.vy;
+        s.life -= s.decay;
+        if (s.life <= 0) return false;
+        fctx.globalAlpha = Math.max(s.life, 0);
+        fctx.strokeStyle = s.color; fctx.lineWidth = s.size;
+        fctx.beginPath(); fctx.moveTo(s.px, s.py); fctx.lineTo(s.x, s.y); fctx.stroke();
+        if (Math.random() < .05) { // scintillement
+          fctx.fillStyle = '#fff';
+          fctx.fillRect(s.x, s.y, 1.5, 1.5);
+        }
+        fctx.globalAlpha = 1;
+        return true;
+      });
+
+      if (rockets.length || sparks.length) requestAnimationFrame(frame);
+      else { running = false; fctx.clearRect(0, 0, W, H); }
+    }
+
+    function start() { if (!running) { running = true; requestAnimationFrame(frame); } }
+
+    return {
+      celebrate() {
+        const count = reduced ? 1 : 5;
+        for (let i = 0; i < count; i++) launch(i * 220 + Math.random() * 120);
+      }
+    };
+  })();
 
   // Contrôle d'intégrité de la banque
   console.assert(BANK.length === 30, 'La banque doit contenir 30 questions');
